@@ -1,0 +1,13 @@
+{
+  "name": "guard-ian-a2a-bridge",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Node helper that sends one forecasting request to GUARD.IAN with upstream's @xpr-agents/sdk A2AClient (see a2a_send.mjs)",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "@xpr-agents/sdk": "0.5.3"
+  }
+}

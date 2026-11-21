@@ -1,6 +1,8 @@
 import argparse
 import asyncio
 import logging
+import os
+import sys
 from datetime import datetime, timezone
 from typing import Literal
 
@@ -39,6 +41,16 @@ from forecasting_tools import (
     SmartSearcher,
     clean_indents,
     structure_output,
+)
+
+from guard_ian_bridge import (
+    GuardIanLlm,
+    GuardIanQuestionContext,
+    SaveOnlyMetaculusClient,
+    assert_guard_ian_is_the_only_forecaster,
+    find_private_markers,
+    missing_guard_ian_env,
+    synthetic_question,
 )
 
 dotenv.load_dotenv()
@@ -683,49 +695,115 @@ class FallTemplateBot2026(ForecastBot):
         )
 
 
+class GuardIanForecastBot(GuardIanQuestionContext, FallTemplateBot2026):
+    """
+    The template bot with GUARD.IAN as its one and only forecaster (see guard_ian_bridge.py).
+    Research, parsing, aggregation, the one-forecast-per-question rule and submission stay with forecasting-tools.
+    """
+
+
+def build_guard_ian_bot(
+    *,
+    save_only: bool,
+    transport=None,
+    support_llms: dict | None = None,
+    metaculus_client: MetaculusClient | None = None,
+) -> GuardIanForecastBot:
+    """
+    Builds the one bot this fork runs. "default" (the forecaster) is always GUARD.IAN; `support_llms` may replace
+    only the researcher, summarizer and parser (tests use this). Save-only: publishing off, one forecast, reports
+    saved to GUARD_IAN_SAVE_DIR, and a Metaculus client that refuses every write.
+    """
+    save_dir = os.getenv("GUARD_IAN_SAVE_DIR", "guard_ian_saved") if save_only else None
+    llms: dict = {
+        # Research with OpenAI's own web search (settings from de0a011). These models never forecast.
+        "researcher": GeneralLlm(
+            model="openai/gpt-6-luna", responses_api=True, temperature=None, tools=[{"type": "web_search"}]
+        ),
+        "summarizer": GeneralLlm(model="openai/gpt-6-luna", temperature=None),
+        "parser": GeneralLlm(model="openai/gpt-6-luna", temperature=None),
+    }
+    for purpose, llm in (support_llms or {}).items():
+        if purpose not in ("researcher", "summarizer", "parser"):
+            raise ValueError(f"support_llms may not set '{purpose}'")
+        llms[purpose] = llm
+    llms["default"] = GuardIanLlm(transport=transport, save_dir=save_dir)  # the ONLY forecaster
+    bot = GuardIanForecastBot(
+        research_reports_per_question=1,
+        # Live: 5 forecasts per question, all from GUARD.IAN, median submitted once. Save-only: one A2A call.
+        predictions_per_research_report=1 if save_only else 5,
+        use_research_summary_to_forecast=False,
+        publish_reports_to_metaculus=not save_only,
+        folder_to_save_reports_to=save_dir,
+        skip_previously_forecasted_questions=True,
+        extra_metadata_in_explanation=True,
+        llms=llms,
+        metaculus_client=metaculus_client or (SaveOnlyMetaculusClient() if save_only else MetaculusClient()),
+    )
+    assert_guard_ian_is_the_only_forecaster(bot)
+    return bot
+
+
+def run_save_only(bot: GuardIanForecastBot) -> list:
+    """Forecasts the made-up question in guard_ian_bridge.synthetic_question() and saves everything locally."""
+    if bot.publish_reports_to_metaculus or not isinstance(bot.metaculus_client, SaveOnlyMetaculusClient):
+        raise SystemExit("Refusing to run save-only with publishing or a writing Metaculus client")
+    reports = asyncio.run(bot.forecast_questions([synthetic_question()], return_exceptions=True))
+    for report in reports:
+        if isinstance(report, BaseException):
+            continue
+        markers = find_private_markers(report.explanation)
+        print(f"Private-marker scan of the comment that would be posted: {', '.join(markers) or 'none found'}")
+    print(f"Saved to {bot.folder_to_save_reports_to}/ (ForecastReport JSON + guard-ian-a2a-replies.jsonl)")
+    return reports
+
+
 if __name__ == "__main__":
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     )
 
-    parser = argparse.ArgumentParser(description="Run the template forecasting bot")
+    parser = argparse.ArgumentParser(description="Run the GUARD.IAN forecasting bot")
     parser.add_argument(
         "--mode",
         type=str,
         choices=["tournament", "metaculus_cup", "test_questions"],
         default="tournament",
-        help="What to forecast on (default: tournament)",
+        help="What to forecast on with --live (default: tournament)",
+    )
+    parser.add_argument(
+        "--live",
+        action="store_true",
+        help=(
+            "Post forecasts and comments to Metaculus. Without it the bot runs SAVE-ONLY: one made-up question, "
+            "results saved to GUARD_IAN_SAVE_DIR, zero Metaculus calls."
+        ),
     )
     args = parser.parse_args()
     run_mode: Literal["tournament", "metaculus_cup", "test_questions"] = args.mode
+    save_only = not args.live
 
-    check_environment(strict=True)
-    publish_to_metaculus = True
+    if save_only:
+        # No token, no way to write: the Metaculus client is never authenticated in save-only mode.
+        os.environ.pop("METACULUS_TOKEN", None)
+    check_environment(strict=True, require_metaculus_token=not save_only)
+    missing = missing_guard_ian_env()
+    if missing:
+        print(f"❌  GUARD.IAN bridge not configured: set {', '.join(missing)} (see .env.template)")
+        sys.exit(1)
+
+    template_bot = build_guard_ian_bot(save_only=save_only)
+    publish_to_metaculus = template_bot.publish_reports_to_metaculus
+
+    if save_only:
+        print_startup_banner("save_only (one made-up question)", will_publish=False)
+        forecast_reports = run_save_only(template_bot)
+        print_run_summary_banner(forecast_reports, will_publish=False)
+        template_bot.log_report_summary(forecast_reports)  # raises (non-zero exit) if the question failed
+        sys.exit(0)
+
     print_startup_banner(run_mode, will_publish=publish_to_metaculus)
-
-    # Configure the bot. The `llms=` block below is commented out to use
-    # whichever default models forecasting-tools picks based on your env vars;
-    # uncomment and edit to pin specific models.
-    template_bot = FallTemplateBot2026(
-        research_reports_per_question=1,
-        predictions_per_research_report=5,
-        use_research_summary_to_forecast=False,
-        publish_reports_to_metaculus=publish_to_metaculus,
-        folder_to_save_reports_to=None,
-        skip_previously_forecasted_questions=True,
-        extra_metadata_in_explanation=True,
-        # Models pinned for an OpenAI key only (settings only; the library's default research
-        # model for an OpenAI key was shut down). Research uses OpenAI's own web search.
-        llms={
-            "default": GeneralLlm(model="openai/gpt-6-luna", reasoning_effort="high", temperature=None, timeout=900),
-            "researcher": GeneralLlm(
-                model="openai/gpt-6-luna", responses_api=True, temperature=None, tools=[{"type": "web_search"}]
-            ),
-            "summarizer": GeneralLlm(model="openai/gpt-6-luna", temperature=None),
-            "parser": GeneralLlm(model="openai/gpt-6-luna", temperature=None),
-        },
-    )
 
     # Per-mode tournament URL shown in the summary banner footer. These
     # piggyback on the forecasting_tools SDK constants and need updating
