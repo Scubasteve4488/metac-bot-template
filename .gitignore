@@ -174,3 +174,7 @@ cython_debug/
 
 # Local scratch/temp scripts
 temp/
+
+### GUARD.IAN bridge ###
+node_modules/
+guard_ian_saved/
