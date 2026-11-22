@@ -287,6 +287,65 @@ class SaveOnlyClientTests(unittest.TestCase):
             self.assertIn(name, SaveOnlyMetaculusClient.WRITE_METHODS)
 
 
+# Made-up leak samples (random characters and documentation-range addresses, nothing real).
+FAKE_API_KEY = "sk-" + "Zq8" * 12
+LEAKS = (FAKE_API_KEY, "PVT_K1_fakefakefake", "203.0.113.45", "2001:db8::17", "examplewallet1", "Example Person")
+
+
+class LeakyResearchLlm(FakeLlm):
+    async def invoke(self, prompt, system_prompt=None) -> str:
+        self.calls += 1
+        return f"Research. Key {FAKE_API_KEY}, PVT_K1_fakefakefake, host 203.0.113.45 and 2001:db8::17; examplewallet1."
+
+
+class RecordingMetaculusClient(MetaculusClient):
+    """Dots' fake client: records what would be posted to Metaculus, sends nothing."""
+
+    def __init__(self) -> None:
+        super().__init__(token="not-a-real-token")
+        self.comments: list[str] = []
+        self.predictions: list[float] = []
+
+    def post_question_comment(self, post_id, comment_text, *args, **kwargs) -> None:
+        self.comments.append(comment_text)
+
+    def post_binary_question_prediction(self, question_id, prediction_in_decimal, *args, **kwargs) -> None:
+        self.predictions.append(prediction_in_decimal)
+
+
+class PublicCommentTests(unittest.TestCase):
+    def test_scrub_removes_keys_addresses_and_private_words_and_keeps_normal_text(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            terms_file = Path(tmp, "terms.txt")
+            terms_file.write_text("# private words\nExample Person\n", encoding="utf-8")
+            env = {"GUARD_IAN_PRIVATE_TERMS": "examplewallet1", "GUARD_IAN_PRIVATE_TERMS_FILE": str(terms_file)}
+            with mock.patch.dict(os.environ, env):
+                text, removed = bridge.scrub_public_comment(
+                    f"{FAKE_API_KEY} PVT_K1_fakefakefake 203.0.113.45. [2001:db8::17] examplewallet1 example person"
+                )
+                keep = "CPI 3.0% on 2026-12-20 at 12:30:45, see https://www.bls.gov/cpi/ (v1.2.3)."
+                self.assertEqual(bridge.scrub_public_comment(keep), (keep, []))
+        for leak in LEAKS:
+            self.assertNotIn(leak.lower(), text.lower())
+        self.assertEqual(removed, ["API key", "private key", "private term", "server address"])
+
+    def test_private_material_never_reaches_the_metaculus_client(self) -> None:
+        client = RecordingMetaculusClient()
+        llms = {**support_llms(), "researcher": LeakyResearchLlm("researcher")}
+        bot = main.build_guard_ian_bot(save_only=False, transport=FakeTransport(), support_llms=llms,
+                                       metaculus_client=client)
+        question = BinaryQuestion(question_text="Will it? (asks 198.51.100.7)", id_of_question=1, id_of_post=2)
+        with mock.patch.dict(os.environ, {"GUARD_IAN_PRIVATE_TERMS": "examplewallet1"}), NetworkGuard():
+            reports = asyncio.run(bot.forecast_questions([question], return_exceptions=True))
+        self.assertIsInstance(reports[0], ForecastReport, msg=repr(reports[0]))
+        self.assertEqual(client.predictions, [0.37])
+        self.assertEqual(len(client.comments), 1)
+        for leak in LEAKS[:5] + ("198.51.100.7",):
+            self.assertNotIn(leak, client.comments[0])
+        self.assertIn("[removed]", client.comments[0])
+        self.assertIn("Probability: 37%", client.comments[0])
+
+
 def mc_question() -> MultipleChoiceQuestion:
     return MultipleChoiceQuestion(question_text="Which?", options=["Red", "Green", "Blue team"])
 

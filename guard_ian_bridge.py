@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
+import ipaddress
 import json
 import logging
 import math
@@ -183,13 +184,62 @@ _PRIVATE_PATTERNS: tuple[tuple[str, str], ...] = (
 )
 
 
+def _private_terms() -> list[str]:
+    """Words from GUARD_IAN_PRIVATE_TERMS (comma-separated) plus GUARD_IAN_PRIVATE_TERMS_FILE (default: an untracked
+    private_terms.txt next to this file; one term per line, # starts a comment). Never commit real terms."""
+    terms = os.getenv("GUARD_IAN_PRIVATE_TERMS", "").split(",")
+    path = Path(os.getenv("GUARD_IAN_PRIVATE_TERMS_FILE") or Path(__file__).with_name("private_terms.txt"))
+    if path.is_file():
+        terms += [line for line in path.read_text(encoding="utf-8").splitlines() if not line.lstrip().startswith("#")]
+    return [t.strip() for t in terms if t.strip()]
+
+
 def find_private_markers(text: str) -> list[str]:
     found = [label for pattern, label in _PRIVATE_PATTERNS if re.search(pattern, text, re.IGNORECASE)]
-    extra = [t.strip() for t in os.getenv("GUARD_IAN_PRIVATE_TERMS", "").split(",") if t.strip()]
     found += [
-        "private term" for term in extra if re.search(rf"(?<!\w){re.escape(term)}(?!\w)", text, re.IGNORECASE)
+        "private term"
+        for term in _private_terms()
+        if re.search(rf"(?<!\w){re.escape(term)}(?!\w)", text, re.IGNORECASE)
     ]
     return sorted(set(found))
+
+
+# Extra shapes for the public comment (research text can carry them too): common API keys and PEM private keys.
+_SECRET_PATTERNS: tuple[tuple[str, str], ...] = (
+    (r"\b(?:sk-ant-|sk-|gsk_|ghp_|gho_|ghs_|ghu_|github_pat_|xox[abposr]-|AIza)[A-Za-z0-9_\-]{20,}", "API key"),
+    (r"\bAKIA[0-9A-Z]{16}\b", "API key"),
+    (r"-----BEGIN [A-Z ]*PRIVATE KEY-----", "private key"),
+)
+# Anything shaped like an IPv4 or IPv6 address; Python's ipaddress module decides whether it really is one.
+_ADDRESS_CANDIDATE = re.compile(
+    r"(?<![\w.:])(?:\d{1,3}(?:\.\d{1,3}){3}|[0-9A-Fa-f]{0,4}(?::[0-9A-Fa-f]{0,4}){2,7})(?![\w:]|\.\d)"
+)
+
+
+def scrub_public_comment(text: str) -> tuple[str, list[str]]:
+    """Removes private material from text that will be posted to Metaculus. Returns (clean text, labels removed)."""
+    removed: set[str] = set()
+
+    def cut(label: str) -> Callable[[re.Match], str]:
+        def replace(_: re.Match) -> str:
+            removed.add(label)
+            return "[removed]"
+
+        return replace
+
+    for pattern, label in _PRIVATE_PATTERNS + _SECRET_PATTERNS:
+        text = re.sub(pattern, cut(label), text, flags=re.IGNORECASE)
+    for term in _private_terms():
+        text = re.sub(rf"(?<!\w){re.escape(term)}(?!\w)", cut("private term"), text, flags=re.IGNORECASE)
+
+    def address(m: re.Match) -> str:
+        try:
+            ipaddress.ip_address(m.group(0))
+        except ValueError:
+            return m.group(0)
+        return cut("server address")(m)
+
+    return _ADDRESS_CANDIDATE.sub(address, text), sorted(removed)
 
 
 def _answer_lines(text: str, count: int) -> list[str]:

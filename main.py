@@ -44,12 +44,14 @@ from forecasting_tools import (
 )
 
 from guard_ian_bridge import (
+    GuardIanBadReply,
     GuardIanLlm,
     GuardIanQuestionContext,
     SaveOnlyMetaculusClient,
     assert_guard_ian_is_the_only_forecaster,
     find_private_markers,
     missing_guard_ian_env,
+    scrub_public_comment,
     synthetic_question,
 )
 
@@ -700,6 +702,16 @@ class GuardIanForecastBot(GuardIanQuestionContext, FallTemplateBot2026):
     The template bot with GUARD.IAN as its one and only forecaster (see guard_ian_bridge.py).
     Research, parsing, aggregation, the one-forecast-per-question rule and submission stay with forecasting-tools.
     """
+
+    def _create_unified_explanation(self, *args, **kwargs) -> str:
+        # The comment-submission boundary: this text becomes report.explanation, which the library posts as the
+        # Metaculus comment (bot comments become public). Strip private material; if any survives, post nothing.
+        text, removed = scrub_public_comment(super()._create_unified_explanation(*args, **kwargs))
+        if removed:
+            logger.warning(f"Removed from the Metaculus comment: {', '.join(removed)}")
+        if scrub_public_comment(text)[1]:
+            raise GuardIanBadReply("the Metaculus comment still carries private material; nothing is posted")
+        return text
 
 
 def build_guard_ian_bot(
