@@ -211,9 +211,18 @@ _SECRET_PATTERNS: tuple[tuple[str, str], ...] = (
     (r"-----BEGIN [A-Z ]*PRIVATE KEY-----", "private key"),
 )
 # Anything shaped like an IPv4 or IPv6 address; Python's ipaddress module decides whether it really is one.
+# IPv4 has its own end check so "host:port" (203.0.113.45:8090) is still caught; IPv6 may end in a dotted quad
+# (IPv4-mapped forms such as ::ffff:203.0.113.45).
 _ADDRESS_CANDIDATE = re.compile(
-    r"(?<![\w.:])(?:\d{1,3}(?:\.\d{1,3}){3}|[0-9A-Fa-f]{0,4}(?::[0-9A-Fa-f]{0,4}){2,7})(?![\w:]|\.\d)"
+    r"(?<![\w.:])(?:\d{1,3}(?:\.\d{1,3}){3}(?!\w|\.\d)"
+    r"|[0-9A-Fa-f]{0,4}(?::[0-9A-Fa-f]{0,4}){2,7}(?:\d{1,3}(?:\.\d{1,3}){3})?(?![\w:]|\.\d))"
 )
+# For removal, XPR keys and signatures are matched as whole tokens (prefix plus base58 body), so the secret body
+# never survives; find_private_markers keeps the prefix match for detection.
+_SCRUB_PATTERNS: tuple[tuple[str, str], ...] = (
+    (r"PVT_K1_[1-9A-HJ-NP-Za-km-z]+", "private key"),
+    (r"SIG_K1_[1-9A-HJ-NP-Za-km-z]+", "signature"),
+) + _PRIVATE_PATTERNS[2:]
 
 
 def scrub_public_comment(text: str) -> tuple[str, list[str]]:
@@ -227,7 +236,7 @@ def scrub_public_comment(text: str) -> tuple[str, list[str]]:
 
         return replace
 
-    for pattern, label in _PRIVATE_PATTERNS + _SECRET_PATTERNS:
+    for pattern, label in _SCRUB_PATTERNS + _SECRET_PATTERNS:
         text = re.sub(pattern, cut(label), text, flags=re.IGNORECASE)
     for term in _private_terms():
         text = re.sub(rf"(?<!\w){re.escape(term)}(?!\w)", cut("private term"), text, flags=re.IGNORECASE)

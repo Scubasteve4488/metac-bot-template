@@ -327,7 +327,21 @@ class PublicCommentTests(unittest.TestCase):
                 self.assertEqual(bridge.scrub_public_comment(keep), (keep, []))
         for leak in LEAKS:
             self.assertNotIn(leak.lower(), text.lower())
+        self.assertNotIn("fakefakefake", text)  # the key body, not just its prefix
         self.assertEqual(removed, ["API key", "private key", "private term", "server address"])
+
+    def test_scrub_removes_whole_xpr_keys_and_addresses_with_ports(self) -> None:
+        samples = (
+            ("sig SIG_K1_2fakeBodyXyz end", "2fakeBodyXyz"),
+            ("key PVT_K1_2fakeBodyXyz end", "2fakeBodyXyz"),
+            ("at 203.0.113.45:8090 now", "203.0.113.45"),
+            ("see http://203.0.113.45:8090/health", "203.0.113.45"),
+            ("mapped ::ffff:203.0.113.45 here", "203.0.113.45"),
+        )
+        for sample, secret in samples:
+            text, removed = bridge.scrub_public_comment(sample)
+            self.assertNotIn(secret, text, msg=sample)
+            self.assertTrue(removed, msg=sample)
 
     def test_private_material_never_reaches_the_metaculus_client(self) -> None:
         client = RecordingMetaculusClient()
