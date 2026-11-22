@@ -49,7 +49,9 @@ Updates pending for Spring season:
 
 ######################### CONSTANTS #########################
 # Constants
-SUBMIT_PREDICTION = True  # set to True to publish your predictions to Metaculus
+# GUARD.IAN fork: this script forecasts with stock models, so it must never submit. The bot's one forecaster is
+# GUARD.IAN (main.py + guard_ian_bridge.py); running this file exits at once (see the bottom of the file).
+SUBMIT_PREDICTION = False  # set to True to publish your predictions to Metaculus
 USE_EXAMPLE_QUESTIONS = False  # set to True to forecast on the bot-testing-area tournament
 NUM_RUNS_PER_QUESTION = (
     5  # The median forecast is taken between NUM_RUNS_PER_QUESTION runs
@@ -1622,6 +1624,10 @@ def _print_no_framework_summary_banner(
 
 ######################## FINAL RUN #########################
 if __name__ == "__main__":
+    sys.exit(
+        "main_with_no_framework.py is disabled in this fork: GUARD.IAN is the only forecaster. "
+        "Run `python main.py` (save-only by default) instead."
+    )
     check_environment(strict=True)
 
     active_tournament_id = BOT_TESTING_AREA_ID if USE_EXAMPLE_QUESTIONS else TOURNAMENT_ID

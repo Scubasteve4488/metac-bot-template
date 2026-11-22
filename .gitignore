@@ -174,3 +174,10 @@ cython_debug/
 
 # Local scratch/temp scripts
 temp/
+
+### GUARD.IAN bridge ###
+node_modules/
+guard_ian_saved/
+
+# GUARD.IAN private words for the public-comment check (never commit real ones)
+private_terms.txt

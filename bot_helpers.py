@@ -55,14 +55,15 @@ def silence_noisy_dependencies() -> None:
     litellm_logger.propagate = False
 
 
-def check_environment(strict: bool = True) -> None:
+def check_environment(strict: bool = True, require_metaculus_token: bool = True) -> None:
     """
     Verify METACULUS_TOKEN and at least one LLM key are set. On failure with
-    strict=True, exits the process with a non-zero status.
+    strict=True, exits the process with a non-zero status. Save-only runs pass
+    require_metaculus_token=False: they make no Metaculus calls at all.
     """
     problems: list[str] = []
 
-    if not _is_real_env("METACULUS_TOKEN"):
+    if require_metaculus_token and not _is_real_env("METACULUS_TOKEN"):
         problems.append(
             "METACULUS_TOKEN is missing or still a placeholder. "
             "Get one at https://www.metaculus.com/futureeval/participate/"
